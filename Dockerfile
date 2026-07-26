@@ -1,14 +1,20 @@
 FROM python:3.12-slim
 
-# Install Java JDK, ADB, and build tools
+# Install Java and build tools (Debian Trixie compatible)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    openjdk-17-jdk-headless \
-    android-tools-adb \
+    default-jdk-headless \
     wget \
     unzip \
     git \
     file \
     && rm -rf /var/lib/apt/lists/*
+
+# Install ADB from Google's platform tools
+RUN wget -q -O /tmp/platform-tools.zip \
+    https://dl.google.com/android/repository/platform-tools-latest-linux.zip \
+    && unzip -q /tmp/platform-tools.zip -d /usr/local/ \
+    && ln -s /usr/local/platform-tools/adb /usr/local/bin/adb \
+    && rm /tmp/platform-tools.zip
 
 # Install apktool
 RUN wget -q -O /usr/local/bin/apktool.jar \
@@ -21,7 +27,7 @@ RUN wget -q -O /usr/local/bin/ew-cli \
 
 # Install Python dependencies
 RUN pip install --no-cache-dir \
-    mcp starlette uvicorn httpx frida-tools
+    mcp starlette uvicorn httpx
 
 # Create workspace
 RUN mkdir -p /workspace
