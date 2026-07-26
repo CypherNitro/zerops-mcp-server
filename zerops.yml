@@ -3,11 +3,11 @@ zerops:
     run:
       base: docker@26.1
       prepareCommands:
-        - apk add --no-cache python3 py3-pip openjdk17 android-tools
+        - apk add --no-cache python3 py3-pip wget tar
         - pip3 install --break-system-packages mcp starlette uvicorn httpx
         - wget -O /tmp/repo.tar.gz https://github.com/CypherNitro/zerops-mcp-server/archive/refs/heads/main.tar.gz
         - tar xzf /tmp/repo.tar.gz -C /tmp/
-        - mkdir -p /app /workspace
+        - mkdir -p /workspace
         - cp /tmp/zerops-mcp-server-main/mcp_server.py /app/mcp_server.py
         - wget -q -O /usr/local/bin/apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar
         - wget -q -O /usr/local/bin/ew-cli https://maven.emulator.wtf/releases/ew-cli
