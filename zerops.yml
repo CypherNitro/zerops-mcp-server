@@ -3,10 +3,12 @@ zerops:
     run:
       base: docker@26.1
       prepareCommands:
-        - rm -rf /tmp/zerops-mcp-server-main /tmp/repo.tar.gz /tmp/setup.sh
-        - wget -O /tmp/setup.sh https://raw.githubusercontent.com/CypherNitro/zerops-mcp-server/main/setup.sh
-        - sh /tmp/setup.sh
-      start: python3 /app/mcp_server.py
+        - echo "v6-force-rebuild"
+        - wget -q -O /tmp/repo-v6.tar.gz https://github.com/CypherNitro/zerops-mcp-server/archive/refs/heads/main.tar.gz
+        - mkdir -p /tmp/build-v6
+        - tar xzf /tmp/repo-v6.tar.gz -C /tmp/build-v6 --strip-components=1
+        - docker build --no-cache -t android-re-mcp:v6 /tmp/build-v6
+      start: docker run --network=host -e PORT=8080 -e EW_API_TOKEN=${EW_API_TOKEN} android-re-mcp:v6
       ports:
         - port: 8080
           httpSupport: true
