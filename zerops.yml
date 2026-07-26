@@ -3,9 +3,10 @@ zerops:
     run:
       base: docker@26.1
       prepareCommands:
+        - echo "Rebuild v3 - FastMCP SSE"
         - wget -O /tmp/repo.tar.gz https://github.com/CypherNitro/zerops-mcp-server/archive/refs/heads/main.tar.gz
         - tar xzf /tmp/repo.tar.gz -C /tmp/
-        - docker build -t android-re-mcp /tmp/zerops-mcp-server-main
+        - docker build --no-cache -t android-re-mcp /tmp/zerops-mcp-server-main
       start: docker run --network=host -e PORT=8080 -e EW_API_TOKEN=${EW_API_TOKEN} android-re-mcp
       ports:
         - port: 8080
