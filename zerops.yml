@@ -1,5 +1,5 @@
 zerops:
-  - setup: mcp
+  - setup: docker
     run:
       base: docker@26.1
       prepareCommands:
