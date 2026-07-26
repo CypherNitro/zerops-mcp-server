@@ -14,7 +14,7 @@ from mcp.server.sse import SseServerTransport
 from mcp.types import Tool, TextContent
 from starlette.applications import Starlette
 from starlette.routing import Mount, Route
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 import uvicorn
 import httpx
 
@@ -174,12 +174,13 @@ async def call_tool(name, arguments):
 
 
 async def handle_sse(request):
-    async with sse.connect_sse(request.scope, request.receive, request.send) as (read, write):
+    async with sse.connect_sse(request.scope, request.receive, request._send) as (read, write):
         await server.run(read, write, server.create_initialization_options())
+    return Response()
 
 
 app = Starlette(routes=[
-    Route("/sse", endpoint=handle_sse),
+    Route("/sse", endpoint=handle_sse, methods=["GET"]),
     Mount("/messages/", app=sse.handle_post_message),
     Route("/health", endpoint=lambda r: JSONResponse({"status": "ok", "tools": 15})),
 ])
