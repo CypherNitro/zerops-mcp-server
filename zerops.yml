@@ -1,0 +1,11 @@
+zerops:
+  - setup: mcp
+    run:
+      base: docker@26.1
+      prepareCommands:
+        - git clone https://github.com/CypherNitro/zerops-mcp-server.git /tmp/mcp-repo
+        - docker build -t android-re-mcp /tmp/mcp-repo
+      start: docker run --network=host -e PORT=8080 -e EW_API_TOKEN=${EW_API_TOKEN} android-re-mcp
+      ports:
+        - port: 8080
+          httpSupport: true
