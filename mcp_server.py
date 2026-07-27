@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Android RE MCP Server — Zerops (v12 OAuth no-auth fix)
-Raw ASGI app with HEAD /sse, .well-known/mcp.json, and OAuth protected resource metadata.
+"""Android RE MCP Server — Zerops (v12.1 Bearer-no-token)
+Raw ASGI app: advertises Bearer auth method but accepts any/no token.
 """
 
 import asyncio
@@ -207,7 +207,7 @@ class ASGIApp:
             await send({"type": "http.response.body", "body": b""})
             return
 
-        # SSE endpoint — GET only, raw ASGI with send_wrapper for proxy headers
+        # SSE endpoint — GET only, accepts any Bearer token or no token
         if path == "/sse" and method == "GET":
             wrapped_send = make_send_wrapper(send)
             try:
@@ -238,14 +238,16 @@ class ASGIApp:
             await send({"type": "http.response.body", "body": body})
             return
 
-        # OAuth Protected Resource Metadata for /sse — indicates NO auth required
-        # RFC 9728: empty authorization_servers = no OAuth needed
+        # OAuth Protected Resource Metadata for /sse
+        # Bearer auth method, but NO authorization servers = no token validation needed
+        # Notion sees "Bearer" as auth method, sends empty/dummy Bearer token, server accepts it
         if path == "/.well-known/oauth-protected-resource/sse" and method in ("GET", "HEAD"):
             body = json.dumps({
                 "resource": "https://docker-1be-8080.ny1.zerops.app/sse",
                 "authorization_servers": [],
-                "bearer_methods": [],
-                "scopes_supported": []
+                "bearer_methods": ["header"],
+                "scopes_supported": [],
+                "resource_documentation": "https://github.com/CypherNitro/zerops-mcp-server"
             }).encode()
             await send({"type": "http.response.start", "status": 200, "headers": JSON_HEADERS})
             if method == "GET":
@@ -259,8 +261,9 @@ class ASGIApp:
             body = json.dumps({
                 "resource": "https://docker-1be-8080.ny1.zerops.app",
                 "authorization_servers": [],
-                "bearer_methods": [],
-                "scopes_supported": []
+                "bearer_methods": ["header"],
+                "scopes_supported": [],
+                "resource_documentation": "https://github.com/CypherNitro/zerops-mcp-server"
             }).encode()
             await send({"type": "http.response.start", "status": 200, "headers": JSON_HEADERS})
             if method == "GET":
@@ -269,8 +272,9 @@ class ASGIApp:
                 await send({"type": "http.response.body", "body": b""})
             return
 
-        # OAuth Authorization Server Metadata — return 401 with no auth challenge
-        # This tells Notion there is no OAuth server to register with
+        # OAuth Authorization Server Metadata — return 401 with WWW-Authenticate: Bearer
+        # This tells Notion: "I use Bearer, but there's no OAuth server to register with"
+        # Notion should then use Bearer without token (or with dummy token)
         if path == "/.well-known/oauth-authorization-server" and method in ("GET", "HEAD"):
             await send({"type": "http.response.start", "status": 401, "headers": [[b"www-authenticate", b"Bearer"]] + CORS_HEADERS})
             await send({"type": "http.response.body", "body": b""})
@@ -284,7 +288,7 @@ class ASGIApp:
 
         # Health endpoint
         if path == "/health" and method == "GET":
-            body = json.dumps({"status": "ok", "tools": 15, "version": "v12-oauth-noauth"}).encode()
+            body = json.dumps({"status": "ok", "tools": 15, "version": "v12.1-bearer-no-token"}).encode()
             await send({"type": "http.response.start", "status": 200, "headers": JSON_HEADERS})
             await send({"type": "http.response.body", "body": body})
             return
