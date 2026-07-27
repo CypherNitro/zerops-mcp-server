@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Android RE MCP Server — Zerops (v10 SSE proxy fix)
-Raw ASGI app + send_wrapper to inject X-Accel-Buffering: no header.
+"""Android RE MCP Server — Zerops (v11 HEAD + well-known fix)
+Raw ASGI app with HEAD /sse handler and .well-known/mcp.json endpoint.
 """
 
 import asyncio
@@ -157,29 +157,36 @@ async def call_tool(name, arguments):
 
 CORS_HEADERS = [
     [b"access-control-allow-origin", b"*"],
-    [b"access-control-allow-methods", b"GET, POST, OPTIONS"],
+    [b"access-control-allow-methods", b"GET, HEAD, POST, OPTIONS"],
     [b"access-control-allow-headers", b"*"],
+]
+
+SSE_HEADERS = [
+    [b"content-type", b"text/event-stream"],
+    [b"cache-control", b"no-cache"],
+    [b"connection", b"keep-alive"],
+    [b"x-accel-buffering", b"no"],
+    [b"access-control-allow-origin", b"*"],
 ]
 
 
 def make_send_wrapper(send):
-    """Wrap send to inject SSE-friendly headers on http.response.start"""
     async def send_wrapper(message):
         if message.get("type") == "http.response.start":
             headers = message.get("headers", [])
-            # Add headers to disable proxy buffering (critical for SSE)
-            headers = headers + [
-                [b"x-accel-buffering", b"no"],
-                [b"cache-control", b"no-cache"],
-                [b"connection", b"keep-alive"],
-            ]
-            message = {**message, "headers": headers}
+            existing = {k.lower() for k, _ in (h if isinstance(h, list) else [h] for h in headers)}
+            extra = []
+            if b"x-accel-buffering" not in existing:
+                extra.append([b"x-accel-buffering", b"no"])
+            if b"access-control-allow-origin" not in existing:
+                extra.append([b"access-control-allow-origin", b"*"])
+            if extra:
+                message = {**message, "headers": headers + extra}
         await send(message)
     return send_wrapper
 
 
 class ASGIApp:
-    """Raw ASGI app — no Starlette, send_wrapper for SSE proxy fix"""
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             return
@@ -192,11 +199,17 @@ class ASGIApp:
             await send({"type": "http.response.body", "body": b""})
             return
 
-        # SSE endpoint — wrap send to inject proxy-busting headers
+        # HEAD /sse — Notion checks if endpoint exists before connecting
+        if path == "/sse" and method == "HEAD":
+            await send({"type": "http.response.start", "status": 200, "headers": SSE_HEADERS})
+            await send({"type": "http.response.body", "body": b""})
+            return
+
+        # SSE endpoint — GET only, raw ASGI with send_wrapper for proxy headers
         if path == "/sse" and method == "GET":
             wrapped_send = make_send_wrapper(send)
             try:
-                print("SSE: connection started", flush=True)
+                print("SSE: GET connection started", flush=True)
                 async with sse.connect_sse(scope, receive, wrapped_send) as (read, write):
                     print("SSE: streams connected, starting server.run()", flush=True)
                     await server.run(read, write, server.create_initialization_options())
@@ -212,9 +225,20 @@ class ASGIApp:
                     pass
             return
 
+        # .well-known/mcp.json — MCP server metadata
+        if path == "/.well-known/mcp.json" and method == "GET":
+            body = json.dumps({
+                "name": "android-re-mcp",
+                "version": "1.0.0",
+                "transports": {"sse": "/sse"}
+            }).encode()
+            await send({"type": "http.response.start", "status": 200, "headers": [[b"content-type", b"application/json"]] + CORS_HEADERS})
+            await send({"type": "http.response.body", "body": body})
+            return
+
         # Health endpoint
         if path == "/health" and method == "GET":
-            body = json.dumps({"status": "ok", "tools": 15, "version": "v10-sse-proxy-fix"}).encode()
+            body = json.dumps({"status": "ok", "tools": 15, "version": "v11-head-fix"}).encode()
             await send({"type": "http.response.start", "status": 200, "headers": [[b"content-type", b"application/json"]] + CORS_HEADERS})
             await send({"type": "http.response.body", "body": body})
             return

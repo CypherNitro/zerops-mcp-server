@@ -3,11 +3,11 @@ zerops:
     run:
       base: docker@26.1
       prepareCommands:
-        - echo "v10-sse-proxy-fix"
-        - wget -q -O /tmp/r10.tar.gz https://github.com/CypherNitro/zerops-mcp-server/archive/refs/heads/main.tar.gz
-        - tar xzf /tmp/r10.tar.gz -C /tmp/
-        - docker build --no-cache -t ar-mcp:v10 /tmp/zerops-mcp-server-main
-      start: docker run --network=host -e PORT=8080 -e EW_API_TOKEN=${EW_API_TOKEN} ar-mcp:v10
+        - echo "v11-head-wellknown-fix"
+        - wget -q -O /tmp/r11.tar.gz https://github.com/CypherNitro/zerops-mcp-server/archive/refs/heads/main.tar.gz
+        - tar xzf /tmp/r11.tar.gz -C /tmp/
+        - docker build --no-cache -t ar-mcp:v11 /tmp/zerops-mcp-server-main
+      start: docker run --network=host -e PORT=8080 -e EW_API_TOKEN=${EW_API_TOKEN} ar-mcp:v11
       ports:
         - port: 8080
           httpSupport: true
