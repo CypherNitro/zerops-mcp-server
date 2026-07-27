@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Android RE MCP Server — Zerops (v13 Streamable HTTP)
-Adds StreamableHTTPServerTransport for POST / support (Notion requires this).
-Keeps SSE at /sse as fallback.
+"""Android RE MCP Server — Zerops (v13.1 fixed emulator tools)
+Fixes: start_emulator uses --device format, runs in background.
+ADB tools auto-detect device serial.
 """
 
 import asyncio
@@ -45,15 +45,12 @@ async def init_streamable():
                 mcp_session_id=None,
                 is_json_response_enabled=True
             )
-            # Enter connect() context manager manually (keep alive for server lifetime)
             cm = _streamable_transport.connect()
             read, write = await cm.__aenter__()
             _streamable_cm = cm
-            # Start server.run() in background task
             asyncio.create_task(
                 server.run(read, write, server.create_initialization_options())
             )
-            # Small delay to let server initialize
             await asyncio.sleep(0.05)
             print("Streamable HTTP transport initialized", flush=True)
         except Exception as e:
@@ -82,6 +79,20 @@ def abs_path(path):
     return path if os.path.isabs(path) else os.path.join(WORK_DIR, path)
 
 
+def get_adb_serial():
+    """Auto-detect the first connected ADB device serial."""
+    try:
+        result = subprocess.run(["adb", "devices"], capture_output=True, text=True, timeout=5)
+        lines = result.stdout.strip().split("\n")[1:]  # skip header
+        for line in lines:
+            parts = line.strip().split("\t")
+            if len(parts) >= 2 and parts[1].strip() == "device":
+                return parts[0].strip()
+    except:
+        pass
+    return None
+
+
 @server.list_tools()
 async def list_tools():
     return [
@@ -94,12 +105,12 @@ async def list_tools():
         Tool(name="search_in_files", description="Search for pattern in files using grep.", inputSchema={"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"file_pattern":{"type":"string"}},"required":["pattern","path"]}),
         Tool(name="rebuild_apk", description="Rebuild decompiled APK using apktool.", inputSchema={"type":"object","properties":{"source_dir":{"type":"string"},"output_apk":{"type":"string"}},"required":["source_dir","output_apk"]}),
         Tool(name="sign_apk", description="Sign APK with debug keystore. Creates one if needed.", inputSchema={"type":"object","properties":{"apk_path":{"type":"string"}},"required":["apk_path"]}),
-        Tool(name="start_emulator", description="Start emulator.wtf session with ADB.", inputSchema={"type":"object","properties":{"api_level":{"type":"integer","default":33},"image":{"type":"string"}}}),
+        Tool(name="start_emulator", description="Start emulator.wtf session with ADB. Runs in background. Use model=Pixel7 and version (API level) 23-34.", inputSchema={"type":"object","properties":{"model":{"type":"string","default":"Pixel7"},"version":{"type":"integer","default":33},"max_time":{"type":"string","default":"1h"}}}),
         Tool(name="stop_emulator", description="Stop emulator.wtf session.", inputSchema={"type":"object","properties":{}}),
-        Tool(name="adb_command", description="Run ADB command against emulator.", inputSchema={"type":"object","properties":{"args":{"type":"string"}},"required":["args"]}),
-        Tool(name="adb_install", description="Install APK via ADB.", inputSchema={"type":"object","properties":{"apk_path":{"type":"string"}},"required":["apk_path"]}),
-        Tool(name="adb_screenshot", description="Take screenshot via ADB.", inputSchema={"type":"object","properties":{"output_path":{"type":"string"}}}),
-        Tool(name="adb_logcat", description="Get logcat output from emulator.", inputSchema={"type":"object","properties":{"filter":{"type":"string"},"lines":{"type":"integer","default":100}}}),
+        Tool(name="adb_command", description="Run ADB command against emulator. Auto-detects device if serial not specified.", inputSchema={"type":"object","properties":{"args":{"type":"string","description":"ADB arguments, e.g. 'shell getprop ro.product.model'"},"serial":{"type":"string","description":"Optional device serial. Auto-detected if omitted."}},"required":["args"]}),
+        Tool(name="adb_install", description="Install APK via ADB. Auto-detects device.", inputSchema={"type":"object","properties":{"apk_path":{"type":"string"},"serial":{"type":"string","description":"Optional device serial. Auto-detected if omitted."}},"required":["apk_path"]}),
+        Tool(name="adb_screenshot", description="Take screenshot via ADB. Auto-detects device.", inputSchema={"type":"object","properties":{"output_path":{"type":"string"},"serial":{"type":"string","description":"Optional device serial. Auto-detected if omitted."}}}),
+        Tool(name="adb_logcat", description="Get logcat output from emulator. Auto-detects device.", inputSchema={"type":"object","properties":{"filter":{"type":"string"},"lines":{"type":"integer","default":100},"serial":{"type":"string","description":"Optional device serial. Auto-detected if omitted."}}}),
     ]
 
 
@@ -160,32 +171,52 @@ async def call_tool(name, arguments):
             r = await run_cmd(["jarsigner", "-keystore", ks, "-storepass", "android", "-keypass", "android", apk, "androiddebugkey"])
         return [TextContent(type="text", text=f"Sign {apk}\n{r['stdout']}\n{r['stderr']}\nEXIT: {r['returncode']}")]
     elif name == "start_emulator":
-        api = arguments.get("api_level", 33)
-        img = arguments.get("image", "")
-        cmd = [EW_CLI, "start-session", "--adb"]
-        cmd += ["--image", img] if img else ["--api-level", str(api)]
-        r = await run_cmd(cmd, timeout=120)
-        return [TextContent(type="text", text=f"Start emulator\n{r['stdout']}\n{r['stderr']}\nEXIT: {r['returncode']}")]
+        model = arguments.get("model", "Pixel7")
+        version = arguments.get("version", 33)
+        max_time = arguments.get("max_time", "1h")
+        cmd = f"nohup {EW_CLI} start-session --device model={model},version={version} --adb --json --max-time-limit {max_time} > /workspace/ew-session.log 2>&1 &\necho \"PID: $!\"\nsleep 12\ncat /workspace/ew-session.log"
+        r = await run_cmd(cmd, timeout=30)
+        return [TextContent(type="text", text=f"Start emulator (model={model}, version={version})\n{r['stdout']}\n{r['stderr']}\nEXIT: {r['returncode']}")]
     elif name == "stop_emulator":
         r = await run_cmd([EW_CLI, "stop-session"], timeout=60)
         return [TextContent(type="text", text=f"Stop emulator\n{r['stdout']}\n{r['stderr']}\nEXIT: {r['returncode']}")]
     elif name == "adb_command":
-        r = await run_cmd(["adb"] + arguments["args"].split(), timeout=60)
-        return [TextContent(type="text", text=f"adb {arguments['args']}\n{r['stdout']}\n{r['stderr']}\nEXIT: {r['returncode']}")]
+        serial = arguments.get("serial") or get_adb_serial()
+        args = arguments["args"]
+        if serial:
+            cmd = ["adb", "-s", serial] + args.split()
+        else:
+            cmd = ["adb"] + args.split()
+        r = await run_cmd(cmd, timeout=60)
+        return [TextContent(type="text", text=f"adb {'-s '+serial+' ' if serial else ''}{args}\n{r['stdout']}\n{r['stderr']}\nEXIT: {r['returncode']}")]
     elif name == "adb_install":
         apk = abs_path(arguments["apk_path"])
-        r = await run_cmd(["adb", "install", "-r", "-t", apk], timeout=120)
+        serial = arguments.get("serial") or get_adb_serial()
+        if serial:
+            cmd = ["adb", "-s", serial, "install", "-r", "-t", apk]
+        else:
+            cmd = ["adb", "install", "-r", "-t", apk]
+        r = await run_cmd(cmd, timeout=120)
         return [TextContent(type="text", text=f"Install {apk}\n{r['stdout']}\n{r['stderr']}\nEXIT: {r['returncode']}")]
     elif name == "adb_screenshot":
         out = arguments.get("output_path", os.path.join(WORK_DIR, "screenshot.png"))
-        await run_cmd(f"adb exec-out screencap -p > {out}", timeout=30)
+        serial = arguments.get("serial") or get_adb_serial()
+        if serial:
+            cmd = f"adb -s {serial} exec-out screencap -p > {out}"
+        else:
+            cmd = f"adb exec-out screencap -p > {out}"
+        await run_cmd(cmd, timeout=30)
         if os.path.exists(out):
             return [TextContent(type="text", text=f"Screenshot saved -> {out}")]
         return [TextContent(type="text", text="Screenshot failed")]
     elif name == "adb_logcat":
         filt = arguments.get("filter", "")
         lines = arguments.get("lines", 100)
-        cmd = ["adb", "logcat", "-d", "-t", str(lines)]
+        serial = arguments.get("serial") or get_adb_serial()
+        cmd = ["adb"]
+        if serial:
+            cmd += ["-s", serial]
+        cmd += ["logcat", "-d", "-t", str(lines)]
         if filt:
             cmd.append(filt)
         r = await run_cmd(cmd, timeout=30)
@@ -270,7 +301,7 @@ class ASGIApp:
             await send({"type": "http.response.body", "body": b""})
             return
 
-        # Streamable HTTP at root / (POST, GET, DELETE) — Notion's preferred transport
+        # Streamable HTTP at root / (POST, GET, DELETE)
         if path == "/" and method in ("POST", "GET", "DELETE") and HAS_STREAMABLE:
             await init_streamable()
             if _streamable_transport:
@@ -280,7 +311,6 @@ class ASGIApp:
                 except Exception as e:
                     print(f"Streamable HTTP error: {e}", flush=True)
                     traceback.print_exc()
-                    # Fall through to SSE if streamable fails
 
         # SSE at /sse (fallback) and / (if streamable not available)
         if path in ("/sse", "/") and method == "GET":
@@ -330,7 +360,7 @@ class ASGIApp:
                 await send({"type": "http.response.body", "body": b""})
             return
 
-        # OAuth Authorization Server — 404 (no OAuth server)
+        # OAuth Authorization Server — 404
         if path == "/.well-known/oauth-authorization-server" and method in ("GET", "HEAD"):
             await send({"type": "http.response.start", "status": 404, "headers": JSON_HEADERS})
             await send({"type": "http.response.body", "body": b""})
@@ -344,7 +374,7 @@ class ASGIApp:
 
         # Health endpoint
         if path == "/health" and method == "GET":
-            body = json.dumps({"status": "ok", "tools": 15, "version": "v13-streamable-http", "streamable": HAS_STREAMABLE}).encode()
+            body = json.dumps({"status": "ok", "tools": 15, "version": "v13.1-fixed-emulator", "streamable": HAS_STREAMABLE}).encode()
             await send({"type": "http.response.start", "status": 200, "headers": JSON_HEADERS})
             await send({"type": "http.response.body", "body": body})
             return
