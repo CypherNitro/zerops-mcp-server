@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Android RE MCP Server — Zerops (v12.2 root-sse + oauth-fix)
-Handles SSE at root / AND /sse. OAuth-authorization-server returns 404 (not 401).
+"""Android RE MCP Server — Zerops (v12.3 send_wrapper fix)
+Handles SSE at root / AND /sse. Fixed send_wrapper header parsing for tuples.
 """
 
 import asyncio
@@ -176,14 +176,20 @@ def make_send_wrapper(send):
     async def send_wrapper(message):
         if message.get("type") == "http.response.start":
             headers = message.get("headers", [])
-            existing = {k.lower() for k, _ in (h if isinstance(h, list) else [h] for h in headers)}
+            # Safely parse header keys — handles both lists [k,v] and tuples (k,v)
+            existing = set()
+            for h in headers:
+                try:
+                    existing.add(h[0].lower())
+                except (IndexError, TypeError, KeyError):
+                    pass
             extra = []
             if b"x-accel-buffering" not in existing:
                 extra.append([b"x-accel-buffering", b"no"])
             if b"access-control-allow-origin" not in existing:
                 extra.append([b"access-control-allow-origin", b"*"])
             if extra:
-                message = {**message, "headers": headers + extra}
+                message = {**message, "headers": list(headers) + extra}
         await send(message)
     return send_wrapper
 
@@ -277,7 +283,6 @@ class ASGIApp:
             return
 
         # OAuth Authorization Server Metadata — return 404 (NOT 401!)
-        # 401 triggers Notion's OAuth flow; 404 says "no auth server here"
         if path == "/.well-known/oauth-authorization-server" and method in ("GET", "HEAD"):
             await send({"type": "http.response.start", "status": 404, "headers": JSON_HEADERS})
             await send({"type": "http.response.body", "body": b""})
@@ -291,7 +296,7 @@ class ASGIApp:
 
         # Health endpoint
         if path == "/health" and method == "GET":
-            body = json.dumps({"status": "ok", "tools": 15, "version": "v12.2-root-sse-oauth-fix"}).encode()
+            body = json.dumps({"status": "ok", "tools": 15, "version": "v12.3-send-wrapper-fix"}).encode()
             await send({"type": "http.response.start", "status": 200, "headers": JSON_HEADERS})
             await send({"type": "http.response.body", "body": body})
             return
