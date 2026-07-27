@@ -3,11 +3,11 @@ zerops:
     run:
       base: docker@26.1
       prepareCommands:
-        - echo "v13-streamable-http"
-        - wget -q -O /tmp/r13.tar.gz https://github.com/CypherNitro/zerops-mcp-server/archive/refs/heads/main.tar.gz
-        - tar xzf /tmp/r13.tar.gz -C /tmp/
-        - docker build --no-cache -t ar-mcp:v13 /tmp/zerops-mcp-server-main
-      start: docker run --network=host -e PORT=8080 -e EW_API_TOKEN=${EW_API_TOKEN} ar-mcp:v13
+        - echo "v13.1-fixed-emulator"
+        - wget -q -O /tmp/r131.tar.gz https://github.com/CypherNitro/zerops-mcp-server/archive/refs/heads/main.tar.gz
+        - tar xzf /tmp/r131.tar.gz -C /tmp/
+        - docker build --no-cache -t ar-mcp:v131 /tmp/zerops-mcp-server-main
+      start: docker run --network=host -e PORT=8080 -e EW_API_TOKEN=${EW_API_TOKEN} ar-mcp:v131
       ports:
         - port: 8080
           httpSupport: true
