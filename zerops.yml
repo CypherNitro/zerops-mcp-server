@@ -3,11 +3,11 @@ zerops:
     run:
       base: docker@26.1
       prepareCommands:
-        - echo "v12.2-root-sse-oauth-fix"
-        - wget -q -O /tmp/r122.tar.gz https://github.com/CypherNitro/zerops-mcp-server/archive/refs/heads/main.tar.gz
-        - tar xzf /tmp/r122.tar.gz -C /tmp/
-        - docker build --no-cache -t ar-mcp:v122 /tmp/zerops-mcp-server-main
-      start: docker run --network=host -e PORT=8080 -e EW_API_TOKEN=${EW_API_TOKEN} ar-mcp:v122
+        - echo "v12.3-send-wrapper-fix"
+        - wget -q -O /tmp/r123.tar.gz https://github.com/CypherNitro/zerops-mcp-server/archive/refs/heads/main.tar.gz
+        - tar xzf /tmp/r123.tar.gz -C /tmp/
+        - docker build --no-cache -t ar-mcp:v123 /tmp/zerops-mcp-server-main
+      start: docker run --network=host -e PORT=8080 -e EW_API_TOKEN=${EW_API_TOKEN} ar-mcp:v123
       ports:
         - port: 8080
           httpSupport: true
