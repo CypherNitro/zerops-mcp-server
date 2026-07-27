@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Android RE MCP Server — Zerops (v11 HEAD + well-known fix)
-Raw ASGI app with HEAD /sse handler and .well-known/mcp.json endpoint.
+"""Android RE MCP Server — Zerops (v12 OAuth no-auth fix)
+Raw ASGI app with HEAD /sse, .well-known/mcp.json, and OAuth protected resource metadata.
 """
 
 import asyncio
@@ -169,6 +169,8 @@ SSE_HEADERS = [
     [b"access-control-allow-origin", b"*"],
 ]
 
+JSON_HEADERS = [[b"content-type", b"application/json"]] + CORS_HEADERS
+
 
 def make_send_wrapper(send):
     async def send_wrapper(message):
@@ -219,7 +221,7 @@ class ASGIApp:
                 print(f"SSE Error: {err}", flush=True)
                 try:
                     body = json.dumps({"error": str(e), "traceback": err}).encode()
-                    await send({"type": "http.response.start", "status": 500, "headers": [[b"content-type", b"application/json"]] + CORS_HEADERS})
+                    await send({"type": "http.response.start", "status": 500, "headers": JSON_HEADERS})
                     await send({"type": "http.response.body", "body": body})
                 except:
                     pass
@@ -232,14 +234,58 @@ class ASGIApp:
                 "version": "1.0.0",
                 "transports": {"sse": "/sse"}
             }).encode()
-            await send({"type": "http.response.start", "status": 200, "headers": [[b"content-type", b"application/json"]] + CORS_HEADERS})
+            await send({"type": "http.response.start", "status": 200, "headers": JSON_HEADERS})
             await send({"type": "http.response.body", "body": body})
+            return
+
+        # OAuth Protected Resource Metadata for /sse — indicates NO auth required
+        # RFC 9728: empty authorization_servers = no OAuth needed
+        if path == "/.well-known/oauth-protected-resource/sse" and method in ("GET", "HEAD"):
+            body = json.dumps({
+                "resource": "https://docker-1be-8080.ny1.zerops.app/sse",
+                "authorization_servers": [],
+                "bearer_methods": [],
+                "scopes_supported": []
+            }).encode()
+            await send({"type": "http.response.start", "status": 200, "headers": JSON_HEADERS})
+            if method == "GET":
+                await send({"type": "http.response.body", "body": body})
+            else:
+                await send({"type": "http.response.body", "body": b""})
+            return
+
+        # Also handle without /sse suffix
+        if path == "/.well-known/oauth-protected-resource" and method in ("GET", "HEAD"):
+            body = json.dumps({
+                "resource": "https://docker-1be-8080.ny1.zerops.app",
+                "authorization_servers": [],
+                "bearer_methods": [],
+                "scopes_supported": []
+            }).encode()
+            await send({"type": "http.response.start", "status": 200, "headers": JSON_HEADERS})
+            if method == "GET":
+                await send({"type": "http.response.body", "body": body})
+            else:
+                await send({"type": "http.response.body", "body": b""})
+            return
+
+        # OAuth Authorization Server Metadata — return 401 with no auth challenge
+        # This tells Notion there is no OAuth server to register with
+        if path == "/.well-known/oauth-authorization-server" and method in ("GET", "HEAD"):
+            await send({"type": "http.response.start", "status": 401, "headers": [[b"www-authenticate", b"Bearer"]] + CORS_HEADERS})
+            await send({"type": "http.response.body", "body": b""})
+            return
+
+        # OpenID Configuration — no OpenID support
+        if path == "/.well-known/openid-configuration" and method in ("GET", "HEAD"):
+            await send({"type": "http.response.start", "status": 404, "headers": JSON_HEADERS})
+            await send({"type": "http.response.body", "body": b"{\"error\":\"no_openid_support\"}"})
             return
 
         # Health endpoint
         if path == "/health" and method == "GET":
-            body = json.dumps({"status": "ok", "tools": 15, "version": "v11-head-fix"}).encode()
-            await send({"type": "http.response.start", "status": 200, "headers": [[b"content-type", b"application/json"]] + CORS_HEADERS})
+            body = json.dumps({"status": "ok", "tools": 15, "version": "v12-oauth-noauth"}).encode()
+            await send({"type": "http.response.start", "status": 200, "headers": JSON_HEADERS})
             await send({"type": "http.response.body", "body": body})
             return
 
