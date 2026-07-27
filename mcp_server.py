@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Android RE MCP Server — Zerops (v9 raw ASGI, no Starlette routing)
-Raw ASGI app to avoid Starlette Route response conflicts with SSE transport.
+"""Android RE MCP Server — Zerops (v10 SSE proxy fix)
+Raw ASGI app + send_wrapper to inject X-Accel-Buffering: no header.
 """
 
 import asyncio
@@ -162,8 +162,24 @@ CORS_HEADERS = [
 ]
 
 
+def make_send_wrapper(send):
+    """Wrap send to inject SSE-friendly headers on http.response.start"""
+    async def send_wrapper(message):
+        if message.get("type") == "http.response.start":
+            headers = message.get("headers", [])
+            # Add headers to disable proxy buffering (critical for SSE)
+            headers = headers + [
+                [b"x-accel-buffering", b"no"],
+                [b"cache-control", b"no-cache"],
+                [b"connection", b"keep-alive"],
+            ]
+            message = {**message, "headers": headers}
+        await send(message)
+    return send_wrapper
+
+
 class ASGIApp:
-    """Raw ASGI app — no Starlette routing, direct send to SSE transport"""
+    """Raw ASGI app — no Starlette, send_wrapper for SSE proxy fix"""
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             return
@@ -176,11 +192,12 @@ class ASGIApp:
             await send({"type": "http.response.body", "body": b""})
             return
 
-        # SSE endpoint — raw ASGI, send callable passed directly to SSE transport
+        # SSE endpoint — wrap send to inject proxy-busting headers
         if path == "/sse" and method == "GET":
+            wrapped_send = make_send_wrapper(send)
             try:
                 print("SSE: connection started", flush=True)
-                async with sse.connect_sse(scope, receive, send) as (read, write):
+                async with sse.connect_sse(scope, receive, wrapped_send) as (read, write):
                     print("SSE: streams connected, starting server.run()", flush=True)
                     await server.run(read, write, server.create_initialization_options())
                     print("SSE: server.run() completed", flush=True)
@@ -197,7 +214,7 @@ class ASGIApp:
 
         # Health endpoint
         if path == "/health" and method == "GET":
-            body = json.dumps({"status": "ok", "tools": 15, "version": "v9-raw-asgi"}).encode()
+            body = json.dumps({"status": "ok", "tools": 15, "version": "v10-sse-proxy-fix"}).encode()
             await send({"type": "http.response.start", "status": 200, "headers": [[b"content-type", b"application/json"]] + CORS_HEADERS})
             await send({"type": "http.response.body", "body": body})
             return
