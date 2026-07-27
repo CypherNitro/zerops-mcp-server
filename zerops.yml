@@ -3,11 +3,11 @@ zerops:
     run:
       base: docker@26.1
       prepareCommands:
-        - echo "v7-force-rebuild"
-        - wget -q -O /tmp/r7.tar.gz https://github.com/CypherNitro/zerops-mcp-server/archive/refs/heads/main.tar.gz
-        - tar xzf /tmp/r7.tar.gz -C /tmp/
-        - docker build --no-cache -t ar-mcp:v7 /tmp/zerops-mcp-server-main
-      start: docker run --network=host -e PORT=8080 -e EW_API_TOKEN=${EW_API_TOKEN} ar-mcp:v7
+        - echo "v8-raw-asgi-sse"
+        - wget -q -O /tmp/r8.tar.gz https://github.com/CypherNitro/zerops-mcp-server/archive/refs/heads/main.tar.gz
+        - tar xzf /tmp/r8.tar.gz -C /tmp/
+        - docker build --no-cache -t ar-mcp:v8 /tmp/zerops-mcp-server-main
+      start: docker run --network=host -e PORT=8080 -e EW_API_TOKEN=${EW_API_TOKEN} ar-mcp:v8
       ports:
         - port: 8080
           httpSupport: true

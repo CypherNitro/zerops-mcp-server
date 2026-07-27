@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Android RE MCP Server — Zerops (v5 with error handler)
-15 tools for APK reverse engineering and emulator.wtf control.
+"""Android RE MCP Server — Zerops (v8 raw ASGI SSE)
+Uses raw ASGI app for SSE to bypass request._send issues.
 """
 
 import asyncio
@@ -8,12 +8,15 @@ import os
 import subprocess
 import shutil
 import traceback
+import json
 from mcp.server import Server
 from mcp.server.sse import SseServerTransport
 from mcp.types import Tool, TextContent
 from starlette.applications import Starlette
 from starlette.routing import Mount, Route
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
 import uvicorn
 import httpx
 
@@ -157,29 +160,44 @@ async def call_tool(name, arguments):
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
 
-async def handle_sse(request):
-    try:
-        async with sse.connect_sse(request.scope, request.receive, request._send) as (read, write):
-            await server.run(read, write, server.create_initialization_options())
-        return Response()
-    except Exception as e:
-        return JSONResponse({"error": str(e), "traceback": traceback.format_exc()}, status_code=500)
+class SSEHandler:
+    """Raw ASGI app for SSE — uses send callable directly, bypasses request._send"""
+    async def __call__(self, scope, receive, send):
+        if scope["method"] != "GET":
+            await send({"type": "http.response.start", "status": 405, "headers": [[b"content-type", b"text/plain"]]})
+            await send({"type": "http.response.body", "body": b"Method Not Allowed"})
+            return
+        try:
+            print("SSE: connection started", flush=True)
+            async with sse.connect_sse(scope, receive, send) as (read, write):
+                print("SSE: streams connected, starting server.run()", flush=True)
+                await server.run(read, write, server.create_initialization_options())
+                print("SSE: server.run() completed", flush=True)
+        except Exception as e:
+            err = traceback.format_exc()
+            print(f"SSE Error: {err}", flush=True)
+            body = json.dumps({"error": str(e), "traceback": err}).encode()
+            try:
+                await send({"type": "http.response.start", "status": 500, "headers": [[b"content-type", b"application/json"]]})
+                await send({"type": "http.response.body", "body": body})
+            except:
+                pass
 
 
 async def health(request):
-    try:
-        import mcp
-        ver = getattr(mcp, '__version__', 'unknown')
-    except:
-        ver = 'unknown'
-    return JSONResponse({"status": "ok", "tools": 15, "version": "v5", "mcp_version": ver})
+    return JSONResponse({"status": "ok", "tools": 15, "version": "v8-raw-asgi"})
 
 
-app = Starlette(routes=[
-    Route("/sse", endpoint=handle_sse, methods=["GET"]),
-    Mount("/messages/", app=sse.handle_post_message),
-    Route("/health", endpoint=health),
-])
+app = Starlette(
+    routes=[
+        Route("/sse", endpoint=SSEHandler(), methods=["GET"]),
+        Mount("/messages/", app=sse.handle_post_message),
+        Route("/health", endpoint=health),
+    ],
+    middleware=[
+        Middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]),
+    ]
+)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
