@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Android RE MCP Server — Zerops (v12.1 Bearer-no-token)
-Raw ASGI app: advertises Bearer auth method but accepts any/no token.
+"""Android RE MCP Server — Zerops (v12.2 root-sse + oauth-fix)
+Handles SSE at root / AND /sse. OAuth-authorization-server returns 404 (not 401).
 """
 
 import asyncio
@@ -188,6 +188,27 @@ def make_send_wrapper(send):
     return send_wrapper
 
 
+async def handle_sse(scope, receive, send):
+    """Shared SSE handler for both / and /sse paths."""
+    wrapped_send = make_send_wrapper(send)
+    try:
+        path = scope["path"]
+        print(f"SSE: GET connection started at {path}", flush=True)
+        async with sse.connect_sse(scope, receive, wrapped_send) as (read, write):
+            print("SSE: streams connected, starting server.run()", flush=True)
+            await server.run(read, write, server.create_initialization_options())
+            print("SSE: server.run() completed", flush=True)
+    except Exception as e:
+        err = traceback.format_exc()
+        print(f"SSE Error: {err}", flush=True)
+        try:
+            body = json.dumps({"error": str(e), "traceback": err}).encode()
+            await send({"type": "http.response.start", "status": 500, "headers": JSON_HEADERS})
+            await send({"type": "http.response.body", "body": body})
+        except:
+            pass
+
+
 class ASGIApp:
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -195,59 +216,44 @@ class ASGIApp:
         path = scope["path"]
         method = scope["method"]
 
-        # CORS preflight
+        # CORS preflight — handle ALL OPTIONS requests
         if method == "OPTIONS":
             await send({"type": "http.response.start", "status": 200, "headers": CORS_HEADERS})
             await send({"type": "http.response.body", "body": b""})
             return
 
-        # HEAD /sse — Notion checks if endpoint exists before connecting
-        if path == "/sse" and method == "HEAD":
+        # HEAD / and /sse — Notion checks if endpoint exists before connecting
+        if path in ("/sse", "/") and method == "HEAD":
             await send({"type": "http.response.start", "status": 200, "headers": SSE_HEADERS})
             await send({"type": "http.response.body", "body": b""})
             return
 
-        # SSE endpoint — GET only, accepts any Bearer token or no token
-        if path == "/sse" and method == "GET":
-            wrapped_send = make_send_wrapper(send)
-            try:
-                print("SSE: GET connection started", flush=True)
-                async with sse.connect_sse(scope, receive, wrapped_send) as (read, write):
-                    print("SSE: streams connected, starting server.run()", flush=True)
-                    await server.run(read, write, server.create_initialization_options())
-                    print("SSE: server.run() completed", flush=True)
-            except Exception as e:
-                err = traceback.format_exc()
-                print(f"SSE Error: {err}", flush=True)
-                try:
-                    body = json.dumps({"error": str(e), "traceback": err}).encode()
-                    await send({"type": "http.response.start", "status": 500, "headers": JSON_HEADERS})
-                    await send({"type": "http.response.body", "body": body})
-                except:
-                    pass
+        # SSE endpoint — handle BOTH / and /sse (Notion connects to root, not /sse)
+        if path in ("/sse", "/") and method == "GET":
+            await handle_sse(scope, receive, send)
             return
 
         # .well-known/mcp.json — MCP server metadata
-        if path == "/.well-known/mcp.json" and method == "GET":
+        if path == "/.well-known/mcp.json" and method in ("GET", "HEAD"):
             body = json.dumps({
                 "name": "android-re-mcp",
                 "version": "1.0.0",
-                "transports": {"sse": "/sse"}
+                "transports": {"sse": "/"}
             }).encode()
             await send({"type": "http.response.start", "status": 200, "headers": JSON_HEADERS})
-            await send({"type": "http.response.body", "body": body})
+            if method == "GET":
+                await send({"type": "http.response.body", "body": body})
+            else:
+                await send({"type": "http.response.body", "body": b""})
             return
 
-        # OAuth Protected Resource Metadata for /sse
-        # Bearer auth method, but NO authorization servers = no token validation needed
-        # Notion sees "Bearer" as auth method, sends empty/dummy Bearer token, server accepts it
+        # OAuth Protected Resource Metadata — Bearer method, no auth servers
         if path == "/.well-known/oauth-protected-resource/sse" and method in ("GET", "HEAD"):
             body = json.dumps({
                 "resource": "https://docker-1be-8080.ny1.zerops.app/sse",
                 "authorization_servers": [],
                 "bearer_methods": ["header"],
-                "scopes_supported": [],
-                "resource_documentation": "https://github.com/CypherNitro/zerops-mcp-server"
+                "scopes_supported": []
             }).encode()
             await send({"type": "http.response.start", "status": 200, "headers": JSON_HEADERS})
             if method == "GET":
@@ -256,14 +262,12 @@ class ASGIApp:
                 await send({"type": "http.response.body", "body": b""})
             return
 
-        # Also handle without /sse suffix
         if path == "/.well-known/oauth-protected-resource" and method in ("GET", "HEAD"):
             body = json.dumps({
                 "resource": "https://docker-1be-8080.ny1.zerops.app",
                 "authorization_servers": [],
                 "bearer_methods": ["header"],
-                "scopes_supported": [],
-                "resource_documentation": "https://github.com/CypherNitro/zerops-mcp-server"
+                "scopes_supported": []
             }).encode()
             await send({"type": "http.response.start", "status": 200, "headers": JSON_HEADERS})
             if method == "GET":
@@ -272,11 +276,10 @@ class ASGIApp:
                 await send({"type": "http.response.body", "body": b""})
             return
 
-        # OAuth Authorization Server Metadata — return 401 with WWW-Authenticate: Bearer
-        # This tells Notion: "I use Bearer, but there's no OAuth server to register with"
-        # Notion should then use Bearer without token (or with dummy token)
+        # OAuth Authorization Server Metadata — return 404 (NOT 401!)
+        # 401 triggers Notion's OAuth flow; 404 says "no auth server here"
         if path == "/.well-known/oauth-authorization-server" and method in ("GET", "HEAD"):
-            await send({"type": "http.response.start", "status": 401, "headers": [[b"www-authenticate", b"Bearer"]] + CORS_HEADERS})
+            await send({"type": "http.response.start", "status": 404, "headers": JSON_HEADERS})
             await send({"type": "http.response.body", "body": b""})
             return
 
@@ -288,7 +291,7 @@ class ASGIApp:
 
         # Health endpoint
         if path == "/health" and method == "GET":
-            body = json.dumps({"status": "ok", "tools": 15, "version": "v12.1-bearer-no-token"}).encode()
+            body = json.dumps({"status": "ok", "tools": 15, "version": "v12.2-root-sse-oauth-fix"}).encode()
             await send({"type": "http.response.start", "status": 200, "headers": JSON_HEADERS})
             await send({"type": "http.response.body", "body": body})
             return
