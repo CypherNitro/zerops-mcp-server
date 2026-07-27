@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Android RE MCP Server — Zerops (v8 raw ASGI SSE)
-Uses raw ASGI app for SSE to bypass request._send issues.
+"""Android RE MCP Server — Zerops (v9 raw ASGI, no Starlette routing)
+Raw ASGI app to avoid Starlette Route response conflicts with SSE transport.
 """
 
 import asyncio
@@ -12,11 +12,6 @@ import json
 from mcp.server import Server
 from mcp.server.sse import SseServerTransport
 from mcp.types import Tool, TextContent
-from starlette.applications import Starlette
-from starlette.routing import Mount, Route
-from starlette.responses import JSONResponse
-from starlette.middleware import Middleware
-from starlette.middleware.cors import CORSMiddleware
 import uvicorn
 import httpx
 
@@ -160,44 +155,62 @@ async def call_tool(name, arguments):
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
 
-class SSEHandler:
-    """Raw ASGI app for SSE — uses send callable directly, bypasses request._send"""
+CORS_HEADERS = [
+    [b"access-control-allow-origin", b"*"],
+    [b"access-control-allow-methods", b"GET, POST, OPTIONS"],
+    [b"access-control-allow-headers", b"*"],
+]
+
+
+class ASGIApp:
+    """Raw ASGI app — no Starlette routing, direct send to SSE transport"""
     async def __call__(self, scope, receive, send):
-        if scope["method"] != "GET":
-            await send({"type": "http.response.start", "status": 405, "headers": [[b"content-type", b"text/plain"]]})
-            await send({"type": "http.response.body", "body": b"Method Not Allowed"})
+        if scope["type"] != "http":
             return
-        try:
-            print("SSE: connection started", flush=True)
-            async with sse.connect_sse(scope, receive, send) as (read, write):
-                print("SSE: streams connected, starting server.run()", flush=True)
-                await server.run(read, write, server.create_initialization_options())
-                print("SSE: server.run() completed", flush=True)
-        except Exception as e:
-            err = traceback.format_exc()
-            print(f"SSE Error: {err}", flush=True)
-            body = json.dumps({"error": str(e), "traceback": err}).encode()
+        path = scope["path"]
+        method = scope["method"]
+
+        # CORS preflight
+        if method == "OPTIONS":
+            await send({"type": "http.response.start", "status": 200, "headers": CORS_HEADERS})
+            await send({"type": "http.response.body", "body": b""})
+            return
+
+        # SSE endpoint — raw ASGI, send callable passed directly to SSE transport
+        if path == "/sse" and method == "GET":
             try:
-                await send({"type": "http.response.start", "status": 500, "headers": [[b"content-type", b"application/json"]]})
-                await send({"type": "http.response.body", "body": body})
-            except:
-                pass
+                print("SSE: connection started", flush=True)
+                async with sse.connect_sse(scope, receive, send) as (read, write):
+                    print("SSE: streams connected, starting server.run()", flush=True)
+                    await server.run(read, write, server.create_initialization_options())
+                    print("SSE: server.run() completed", flush=True)
+            except Exception as e:
+                err = traceback.format_exc()
+                print(f"SSE Error: {err}", flush=True)
+                try:
+                    body = json.dumps({"error": str(e), "traceback": err}).encode()
+                    await send({"type": "http.response.start", "status": 500, "headers": [[b"content-type", b"application/json"]] + CORS_HEADERS})
+                    await send({"type": "http.response.body", "body": body})
+                except:
+                    pass
+            return
 
+        # Health endpoint
+        if path == "/health" and method == "GET":
+            body = json.dumps({"status": "ok", "tools": 15, "version": "v9-raw-asgi"}).encode()
+            await send({"type": "http.response.start", "status": 200, "headers": [[b"content-type", b"application/json"]] + CORS_HEADERS})
+            await send({"type": "http.response.body", "body": body})
+            return
 
-async def health(request):
-    return JSONResponse({"status": "ok", "tools": 15, "version": "v8-raw-asgi"})
+        # Messages endpoint (MCP POST messages)
+        if path.startswith("/messages/") and method == "POST":
+            await sse.handle_post_message(scope, receive, send)
+            return
 
+        # 404
+        await send({"type": "http.response.start", "status": 404, "headers": [[b"content-type", b"text/plain"]]})
+        await send({"type": "http.response.body", "body": b"Not Found"})
 
-app = Starlette(
-    routes=[
-        Route("/sse", endpoint=SSEHandler(), methods=["GET"]),
-        Mount("/messages/", app=sse.handle_post_message),
-        Route("/health", endpoint=health),
-    ],
-    middleware=[
-        Middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]),
-    ]
-)
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+    uvicorn.run(ASGIApp(), host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
