@@ -3,12 +3,11 @@ zerops:
     run:
       base: docker@26.1
       prepareCommands:
-        - echo "v6-force-rebuild"
-        - wget -q -O /tmp/repo-v6.tar.gz https://github.com/CypherNitro/zerops-mcp-server/archive/refs/heads/main.tar.gz
-        - mkdir -p /tmp/build-v6
-        - tar xzf /tmp/repo-v6.tar.gz -C /tmp/build-v6 --strip-components=1
-        - docker build --no-cache -t android-re-mcp:v6 /tmp/build-v6
-      start: docker run --network=host -e PORT=8080 -e EW_API_TOKEN=${EW_API_TOKEN} android-re-mcp:v6
+        - echo "v7-force-rebuild"
+        - wget -q -O /tmp/r7.tar.gz https://github.com/CypherNitro/zerops-mcp-server/archive/refs/heads/main.tar.gz
+        - tar xzf /tmp/r7.tar.gz -C /tmp/
+        - docker build --no-cache -t ar-mcp:v7 /tmp/zerops-mcp-server-main
+      start: docker run --network=host -e PORT=8080 -e EW_API_TOKEN=${EW_API_TOKEN} ar-mcp:v7
       ports:
         - port: 8080
           httpSupport: true
