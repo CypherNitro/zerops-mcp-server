@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Android RE MCP Server — Zerops (v12.3 send_wrapper fix)
-Handles SSE at root / AND /sse. Fixed send_wrapper header parsing for tuples.
+"""Android RE MCP Server — Zerops (v13 Streamable HTTP)
+Adds StreamableHTTPServerTransport for POST / support (Notion requires this).
+Keeps SSE at /sse as fallback.
 """
 
 import asyncio
@@ -15,6 +16,13 @@ from mcp.types import Tool, TextContent
 import uvicorn
 import httpx
 
+# Try to import Streamable HTTP transport (available in newer MCP SDK versions)
+try:
+    from mcp.server.streamable_http import StreamableHTTPServerTransport
+    HAS_STREAMABLE = True
+except ImportError:
+    HAS_STREAMABLE = False
+
 server = Server("android-re-mcp")
 sse = SseServerTransport("/messages/")
 
@@ -22,6 +30,36 @@ WORK_DIR = os.environ.get("WORK_DIR", "/workspace")
 APKTOOL_JAR = "/usr/local/bin/apktool.jar"
 EW_CLI = "/usr/local/bin/ew-cli"
 os.makedirs(WORK_DIR, exist_ok=True)
+
+# Streamable HTTP transport (initialized on first request)
+_streamable_transport = None
+_streamable_cm = None
+_streamable_ready = False
+
+async def init_streamable():
+    global _streamable_transport, _streamable_cm, _streamable_ready
+    if not _streamable_ready and HAS_STREAMABLE:
+        _streamable_ready = True
+        try:
+            _streamable_transport = StreamableHTTPServerTransport(
+                mcp_session_id=None,
+                is_json_response_enabled=True
+            )
+            # Enter connect() context manager manually (keep alive for server lifetime)
+            cm = _streamable_transport.connect()
+            read, write = await cm.__aenter__()
+            _streamable_cm = cm
+            # Start server.run() in background task
+            asyncio.create_task(
+                server.run(read, write, server.create_initialization_options())
+            )
+            # Small delay to let server initialize
+            await asyncio.sleep(0.05)
+            print("Streamable HTTP transport initialized", flush=True)
+        except Exception as e:
+            print(f"Streamable HTTP init error: {e}", flush=True)
+            traceback.print_exc()
+            _streamable_ready = False
 
 
 async def run_cmd(cmd, cwd=None, timeout=300):
@@ -157,7 +195,7 @@ async def call_tool(name, arguments):
 
 CORS_HEADERS = [
     [b"access-control-allow-origin", b"*"],
-    [b"access-control-allow-methods", b"GET, HEAD, POST, OPTIONS"],
+    [b"access-control-allow-methods", b"GET, HEAD, POST, DELETE, OPTIONS"],
     [b"access-control-allow-headers", b"*"],
 ]
 
@@ -176,7 +214,6 @@ def make_send_wrapper(send):
     async def send_wrapper(message):
         if message.get("type") == "http.response.start":
             headers = message.get("headers", [])
-            # Safely parse header keys — handles both lists [k,v] and tuples (k,v)
             existing = set()
             for h in headers:
                 try:
@@ -195,11 +232,10 @@ def make_send_wrapper(send):
 
 
 async def handle_sse(scope, receive, send):
-    """Shared SSE handler for both / and /sse paths."""
+    """SSE handler for /sse path (fallback)."""
     wrapped_send = make_send_wrapper(send)
     try:
-        path = scope["path"]
-        print(f"SSE: GET connection started at {path}", flush=True)
+        print("SSE: GET connection started at /sse", flush=True)
         async with sse.connect_sse(scope, receive, wrapped_send) as (read, write):
             print("SSE: streams connected, starting server.run()", flush=True)
             await server.run(read, write, server.create_initialization_options())
@@ -222,29 +258,41 @@ class ASGIApp:
         path = scope["path"]
         method = scope["method"]
 
-        # CORS preflight — handle ALL OPTIONS requests
+        # CORS preflight
         if method == "OPTIONS":
             await send({"type": "http.response.start", "status": 200, "headers": CORS_HEADERS})
             await send({"type": "http.response.body", "body": b""})
             return
 
-        # HEAD / and /sse — Notion checks if endpoint exists before connecting
+        # HEAD / and /sse
         if path in ("/sse", "/") and method == "HEAD":
             await send({"type": "http.response.start", "status": 200, "headers": SSE_HEADERS})
             await send({"type": "http.response.body", "body": b""})
             return
 
-        # SSE endpoint — handle BOTH / and /sse (Notion connects to root, not /sse)
+        # Streamable HTTP at root / (POST, GET, DELETE) — Notion's preferred transport
+        if path == "/" and method in ("POST", "GET", "DELETE") and HAS_STREAMABLE:
+            await init_streamable()
+            if _streamable_transport:
+                try:
+                    await _streamable_transport.handle_request(scope, receive, send)
+                    return
+                except Exception as e:
+                    print(f"Streamable HTTP error: {e}", flush=True)
+                    traceback.print_exc()
+                    # Fall through to SSE if streamable fails
+
+        # SSE at /sse (fallback) and / (if streamable not available)
         if path in ("/sse", "/") and method == "GET":
             await handle_sse(scope, receive, send)
             return
 
-        # .well-known/mcp.json — MCP server metadata
+        # .well-known/mcp.json
         if path == "/.well-known/mcp.json" and method in ("GET", "HEAD"):
             body = json.dumps({
                 "name": "android-re-mcp",
                 "version": "1.0.0",
-                "transports": {"sse": "/"}
+                "transports": {"sse": "/sse", "streamable_http": "/"}
             }).encode()
             await send({"type": "http.response.start", "status": 200, "headers": JSON_HEADERS})
             if method == "GET":
@@ -253,7 +301,7 @@ class ASGIApp:
                 await send({"type": "http.response.body", "body": b""})
             return
 
-        # OAuth Protected Resource Metadata — Bearer method, no auth servers
+        # OAuth Protected Resource Metadata
         if path == "/.well-known/oauth-protected-resource/sse" and method in ("GET", "HEAD"):
             body = json.dumps({
                 "resource": "https://docker-1be-8080.ny1.zerops.app/sse",
@@ -282,13 +330,13 @@ class ASGIApp:
                 await send({"type": "http.response.body", "body": b""})
             return
 
-        # OAuth Authorization Server Metadata — return 404 (NOT 401!)
+        # OAuth Authorization Server — 404 (no OAuth server)
         if path == "/.well-known/oauth-authorization-server" and method in ("GET", "HEAD"):
             await send({"type": "http.response.start", "status": 404, "headers": JSON_HEADERS})
             await send({"type": "http.response.body", "body": b""})
             return
 
-        # OpenID Configuration — no OpenID support
+        # OpenID Configuration — 404
         if path == "/.well-known/openid-configuration" and method in ("GET", "HEAD"):
             await send({"type": "http.response.start", "status": 404, "headers": JSON_HEADERS})
             await send({"type": "http.response.body", "body": b"{\"error\":\"no_openid_support\"}"})
@@ -296,12 +344,12 @@ class ASGIApp:
 
         # Health endpoint
         if path == "/health" and method == "GET":
-            body = json.dumps({"status": "ok", "tools": 15, "version": "v12.3-send-wrapper-fix"}).encode()
+            body = json.dumps({"status": "ok", "tools": 15, "version": "v13-streamable-http", "streamable": HAS_STREAMABLE}).encode()
             await send({"type": "http.response.start", "status": 200, "headers": JSON_HEADERS})
             await send({"type": "http.response.body", "body": body})
             return
 
-        # Messages endpoint (MCP POST messages)
+        # SSE Messages endpoint
         if path.startswith("/messages/") and method == "POST":
             await sse.handle_post_message(scope, receive, send)
             return
